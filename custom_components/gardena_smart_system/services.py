@@ -231,6 +231,16 @@ class GardenaServiceManager:
                 vol.Optional("detailed", default=False): cv.boolean,
             }),
         )
+        self.hass.services.async_register(
+            DOMAIN,
+            "webhook_diagnostics",
+            self._service_webhook_diagnostics,
+        )
+        self.hass.services.async_register(
+            DOMAIN,
+            "webhook_renew",
+            self._service_webhook_renew,
+        )
 
     def _resolve_device_id(self, device_id: str) -> str:
         """Resolve a HA device registry ID to a Gardena device ID.
@@ -542,3 +552,59 @@ class GardenaServiceManager:
 
             _LOGGER.info(f"WebSocket diagnostics: {diag}")
             return
+
+    async def _service_webhook_diagnostics(self, call: ServiceCall) -> None:
+        """Log diagnostics for the webhook push client (if active)."""
+        from .webhook_client import GardenaWebhookClient
+
+        for entry_id in self.hass.data[DOMAIN]:
+            if entry_id == "service_manager":
+                continue
+            coord = self.hass.data[DOMAIN][entry_id]
+            client = getattr(coord, "push_client", None)
+            if not isinstance(client, GardenaWebhookClient):
+                continue
+
+            renewal_task = client._renewal_task
+            diag = {
+                "entry_id": entry_id,
+                "status": client.connection_status,
+                "is_registered": client.is_registered,
+                "callback_url": client.callback_url,
+                "location_id": client.location_id,
+                "valid_until_epoch": client.valid_until_epoch,
+                "events_received": client._events_received,
+                "last_event_at": client._last_event_at,
+                "has_hmac_secret": client.hmac_secret is not None,
+                "renewal_task_alive": (
+                    renewal_task is not None
+                    and not renewal_task.done()
+                ),
+                "shutdown_requested": client._shutdown,
+            }
+            _LOGGER.info("Webhook diagnostics: %s", diag)
+            return
+
+        _LOGGER.info("Webhook diagnostics: no webhook client found (push_mode=websocket?)")
+
+    async def _service_webhook_renew(self, call: ServiceCall) -> None:
+        """Force re-register the webhook with Husqvarna (refreshes validUntil)."""
+        from .webhook_client import GardenaWebhookClient
+
+        for entry_id in self.hass.data[DOMAIN]:
+            if entry_id == "service_manager":
+                continue
+            coord = self.hass.data[DOMAIN][entry_id]
+            client = getattr(coord, "push_client", None)
+            if not isinstance(client, GardenaWebhookClient):
+                continue
+
+            _LOGGER.info("Webhook renew service called (entry %s)", entry_id)
+            await client.force_reconnect()
+            _LOGGER.info(
+                "Webhook renew complete (is_registered=%s, validUntil=%s)",
+                client.is_registered, client.valid_until_epoch,
+            )
+            return
+
+        _LOGGER.error("Webhook renew: no webhook client found (push_mode=websocket?)")

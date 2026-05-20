@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Webhook events silently dropped** — `_process_message` rejected Husqvarna's documented `WEBHOOK` envelope (`{data: {type: "WEBHOOK", attributes: {events: [...]}}}`) because the outer type was not in the allow-list. Events are now unpacked and dispatched one-by-one. Unwrapped single-document payloads remain supported.
+
+### Added
+
+- `gardena_smart_system.webhook_diagnostics` service — logs current webhook state (registered, callback URL, validUntil epoch, events received, last-event-at, hmac secret presence, renewal task alive).
+- `gardena_smart_system.webhook_renew` service — forces a re-POST to `/v2/webhook` (refreshes validUntil and hmacSecret) without reloading the config entry.
+- Internal counters `events_received` and `last_event_at` on the webhook client, surfaced via diagnostics.
+
 ## [3.0.1] - 2026-05-13
 
 ### Fixed

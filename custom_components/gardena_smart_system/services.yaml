@@ -100,3 +100,9 @@ valve_unpause:
 
 reconnect_websocket:
   description: Force WebSocket reconnection for the Gardena Smart System integration.
+
+webhook_diagnostics:
+  description: Log diagnostics for the webhook push client (registered? validUntil? events received?). Output appears in the home-assistant.log at INFO level.
+
+webhook_renew:
+  description: Force re-registration of the webhook with Husqvarna (refreshes validUntil and hmacSecret). Use when events stopped arriving.

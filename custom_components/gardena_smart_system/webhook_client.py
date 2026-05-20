@@ -87,6 +87,9 @@ class GardenaWebhookClient:
         self.is_registered = False
         self._renewal_task: Optional[asyncio.Task] = None
         self._shutdown = False
+        # Diagnostics counters: visible via webhook_diagnostics service.
+        self._events_received: int = 0
+        self._last_event_at: Optional[float] = None
 
     @property
     def callback_url(self) -> str:
@@ -374,39 +377,76 @@ class GardenaWebhookClient:
             _LOGGER.exception("Error handling webhook: %s", e)
             return web.Response(status=500)
 
+    _KNOWN_SERVICE_TYPES = (
+        "VALVE", "COMMON", "MOWER", "POWER_SOCKET", "SENSOR", "VALVE_SET",
+    )
+
     async def _process_message(self, data: Dict[str, Any]) -> None:
-        """Dispatch payload to coordinator. Mirrors WebSocket _process_service_update."""
+        """Dispatch webhook payload to the coordinator.
+
+        Husqvarna's public docs describe the webhook envelope as a single
+        JSON:API document of type WEBHOOK with an `events` array carrying the
+        actual document-type updates (VALVE, COMMON, ...). We handle that
+        envelope here and also accept the unwrapped single-document form for
+        forward/backward compatibility.
+        """
         try:
-            # Husqvarna webhook payload may be a single service object or wrapped.
-            # Handle both: direct {type, id, attributes} and JSON:API {data: ...}
-            payload = data.get("data", data) if isinstance(data, dict) else data
-            if not isinstance(payload, dict):
+            outer = data.get("data", data) if isinstance(data, dict) else data
+            if not isinstance(outer, dict):
                 _LOGGER.debug("Webhook: unexpected payload shape: %r", data)
                 return
 
-            msg_type = payload.get("type")
-            if msg_type not in ("VALVE", "COMMON", "MOWER", "POWER_SOCKET", "SENSOR", "VALVE_SET"):
-                _LOGGER.debug("Webhook: unknown message type %r: %s", msg_type, payload)
+            outer_type = outer.get("type")
+
+            # Documented envelope: {data: {type: WEBHOOK, attributes: {events: [...]}}}
+            if outer_type == "WEBHOOK":
+                attrs = outer.get("attributes") or {}
+                events = attrs.get("events") or []
+                self._events_received += 1
+                self._last_event_at = datetime.now(timezone.utc).timestamp()
+                _LOGGER.debug(
+                    "Webhook envelope received (id=%s, %d inner events)",
+                    outer.get("id"), len(events),
+                )
+                for ev in events:
+                    await self._dispatch_event(ev)
                 return
 
-            service_id = payload.get("id")
-            attributes = payload.get("attributes", {})
-            if not service_id:
-                _LOGGER.debug("Webhook: payload missing service id")
+            # Fallback: unwrapped single document — handle as a single event.
+            if outer_type in self._KNOWN_SERVICE_TYPES:
+                self._events_received += 1
+                self._last_event_at = datetime.now(timezone.utc).timestamp()
+                await self._dispatch_event(outer)
                 return
 
-            device_id = service_id.split(":")[0]
-            event = {
-                "type": "service_update",
-                "service_id": service_id,
-                "service_type": msg_type,
-                "device_id": device_id,
-                "data": attributes,
-            }
-            if self.event_callback:
-                await self.event_callback(event)
+            _LOGGER.debug("Webhook: unknown outer type %r: %s", outer_type, outer)
         except Exception as e:
             _LOGGER.error("Error processing webhook payload: %s", e)
+
+    async def _dispatch_event(self, payload: Any) -> None:
+        """Forward one document-type event to the coordinator callback."""
+        if not isinstance(payload, dict):
+            _LOGGER.debug("Webhook: event not a dict: %r", payload)
+            return
+        msg_type = payload.get("type")
+        if msg_type not in self._KNOWN_SERVICE_TYPES:
+            _LOGGER.debug("Webhook: skipping unknown event type %r", msg_type)
+            return
+        service_id = payload.get("id")
+        if not service_id:
+            _LOGGER.debug("Webhook: event missing service id: %s", payload)
+            return
+        attributes = payload.get("attributes", {})
+        device_id = service_id.split(":")[0]
+        event = {
+            "type": "service_update",
+            "service_id": service_id,
+            "service_type": msg_type,
+            "device_id": device_id,
+            "data": attributes,
+        }
+        if self.event_callback:
+            await self.event_callback(event)
 
     @property
     def connection_status(self) -> str:

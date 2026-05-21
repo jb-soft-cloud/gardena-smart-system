@@ -90,6 +90,11 @@ class GardenaWebhookClient:
         # Diagnostics counters: visible via webhook_diagnostics service.
         self._events_received: int = 0
         self._last_event_at: Optional[float] = None
+        # Husqvarna doesn't document exactly which HMAC scheme they use, so
+        # we accept both. To confirm the live scheme (and later harden the
+        # handler to reject mismatches with 401), we log INFO the FIRST time
+        # we see each scheme — then fall back to DEBUG to avoid log spam.
+        self._hmac_scheme_logged: set[str] = set()
 
     @property
     def callback_url(self) -> str:
@@ -331,15 +336,9 @@ class GardenaWebhookClient:
                 ).hexdigest()
 
                 if hmac.compare_digest(sig_clean, expected_plain):
-                    _LOGGER.debug(
-                        "Webhook integrity verified via %s (plain SHA-256)",
-                        sig_header_name,
-                    )
+                    self._log_hmac_scheme(sig_header_name, "plain SHA-256")
                 elif hmac.compare_digest(sig_clean, expected_hmac):
-                    _LOGGER.debug(
-                        "Webhook integrity verified via %s (HMAC-SHA256)",
-                        sig_header_name,
-                    )
+                    self._log_hmac_scheme(sig_header_name, "HMAC-SHA256")
                 else:
                     _LOGGER.warning(
                         "Webhook integrity check failed via %s. "
@@ -447,6 +446,24 @@ class GardenaWebhookClient:
         }
         if self.event_callback:
             await self.event_callback(event)
+
+    def _log_hmac_scheme(self, header_name: Optional[str], scheme: str) -> None:
+        """Log INFO on the first event matching each HMAC scheme, DEBUG after.
+
+        Helps confirm which signature scheme Husqvarna actually emits without
+        flooding the log on every event.
+        """
+        key = f"{header_name}|{scheme}"
+        if key not in self._hmac_scheme_logged:
+            self._hmac_scheme_logged.add(key)
+            _LOGGER.info(
+                "Webhook integrity verified via %s (%s) — first observation, "
+                "subsequent matches log at DEBUG", header_name, scheme,
+            )
+        else:
+            _LOGGER.debug(
+                "Webhook integrity verified via %s (%s)", header_name, scheme,
+            )
 
     @property
     def connection_status(self) -> str:

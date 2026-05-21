@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Webhook HMAC verification now logs at INFO level on the first observation of each scheme (plain SHA-256 vs HMAC-SHA256), then drops back to DEBUG for subsequent matches. This lets operators confirm which scheme Husqvarna actually emits without flooding the log. Preparation for switching the handler from soft-warn to hard-reject (`401`) once a single scheme is observed in stable operation.
+
+## [3.0.2] - 2026-05-20
+
 ### Fixed
 
 - **Webhook events silently dropped** — `_process_message` rejected Husqvarna's documented `WEBHOOK` envelope (`{data: {type: "WEBHOOK", attributes: {events: [...]}}}`) because the outer type was not in the allow-list. Events are now unpacked and dispatched one-by-one. Unwrapped single-document payloads remain supported.

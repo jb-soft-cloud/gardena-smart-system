@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+
+- Webhook handler now **rejects unsigned and signature-mismatch requests with HTTP 401** instead of soft-warning and processing them. The previous soft-warn behaviour was only intended to remain in place while the live HMAC scheme was being identified; the scheme is now confirmed as HMAC-SHA256(hmacSecret, body) via the `X-Authorization-Content-Sha256` header. The plain SHA-256(body) acceptance path is kept as a belt-and-suspenders fallback in case Husqvarna rotates the scheme. A configured `hmac_secret` plus an absent or invalid signature now refuses the event with a 401; an event arriving before registration is complete (no secret yet) still passes through.
+
+## [3.0.3] - 2026-05-21
+
 ### Changed
 
 - Webhook HMAC verification now logs at INFO level on the first observation of each scheme (plain SHA-256 vs HMAC-SHA256), then drops back to DEBUG for subsequent matches. This lets operators confirm which scheme Husqvarna actually emits without flooding the log. Preparation for switching the handler from soft-warn to hard-reject (`401`) once a single scheme is observed in stable operation.

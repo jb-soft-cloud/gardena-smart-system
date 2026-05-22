@@ -323,44 +323,47 @@ class GardenaWebhookClient:
                     break
 
             if self.hmac_secret and signature:
-                # Husqvarna's exact signing scheme isn't documented. Try both
-                # plain SHA-256(body) (AWS SigV4-style content integrity) AND
-                # HMAC-SHA256(secret, body) — accept whichever matches.
+                # Husqvarna emits HMAC-SHA256(hmacSecret, body) in the
+                # X-Authorization-Content-Sha256 header (per developer docs
+                # and observed live traffic). The plain SHA-256(body) branch
+                # is kept as a belt-and-suspenders fallback in case the
+                # scheme rotates.
                 # Some providers prefix with "sha256=" — strip that.
                 sig_clean = signature.split("=", 1)[-1] if "=" in signature else signature
                 sig_clean = sig_clean.strip().lower()
 
-                expected_plain = hashlib.sha256(body).hexdigest()
                 expected_hmac = hmac.new(
                     self.hmac_secret.encode(), body, hashlib.sha256,
                 ).hexdigest()
+                expected_plain = hashlib.sha256(body).hexdigest()
 
-                if hmac.compare_digest(sig_clean, expected_plain):
-                    self._log_hmac_scheme(sig_header_name, "plain SHA-256")
-                elif hmac.compare_digest(sig_clean, expected_hmac):
+                if hmac.compare_digest(sig_clean, expected_hmac):
                     self._log_hmac_scheme(sig_header_name, "HMAC-SHA256")
+                elif hmac.compare_digest(sig_clean, expected_plain):
+                    self._log_hmac_scheme(sig_header_name, "plain SHA-256")
                 else:
                     _LOGGER.warning(
-                        "Webhook integrity check failed via %s. "
-                        "got=%s plain_sha256=%s hmac_sha256=%s",
+                        "Webhook integrity check FAILED via %s — rejecting "
+                        "with 401. got=%s hmac_sha256=%s plain_sha256=%s",
                         sig_header_name,
                         sig_clean[:16] + "…",
-                        expected_plain[:16] + "…",
                         expected_hmac[:16] + "…",
+                        expected_plain[:16] + "…",
                     )
-                    # Don't reject yet — log and pass through during debugging
-                    # so we don't lose events while we figure out the scheme.
+                    return web.Response(status=401)
             elif self.hmac_secret:
-                # No signature found — log header names so we can adapt.
+                # Secret is set but the request didn't carry any of the
+                # known signature headers — refuse the event rather than
+                # trust it.
                 visible = [
                     h for h in request.headers.keys()
                     if h.lower() not in ("authorization", "cookie")
                 ]
                 _LOGGER.warning(
-                    "Webhook arrived without recognized signature header. "
-                    "Got headers: %s. Processing anyway for now (debugging).",
-                    visible,
+                    "Webhook arrived without recognized signature header — "
+                    "rejecting with 401. Got headers: %s", visible,
                 )
+                return web.Response(status=401)
 
             try:
                 data = json.loads(body)
